@@ -16,7 +16,6 @@ from operator import itemgetter, attrgetter
 Entry = namedtuple('Entry', 'key values')
 
 
-
 class Nest(object):
     """ Nest allows elements in an array to be grouped into a hierarchical tree structure;
         think of it like the GROUP BY operator in SQL, except you can have multiple levels of
@@ -88,9 +87,10 @@ class Nest(object):
         """
         self._keys       = []
         self._sortKeys   = []
+        self._keyLabels  = []
     
     
-    def key(self, fn):
+    def key(self, fn, label=None):
         """ Registers a new key function. The key function will be invoked for each
             element in the input array, and must return a string identifier that is used to
             assign the element to its group. As most often the key function is just a
@@ -104,10 +104,18 @@ class Nest(object):
             level. There is not currently a facility to remove or query the registered
             keys. The most-recently registered key is referred to as the current key in
             subsequent methods.
+            
+            The optional `label` will be used for pretty output, and derived automatically
+            if possible. 
         """
         if not callable(fn):
+            if not label:
+                label = fn
             fn = itemgetter(fn)
+        if not label:
+            label = "key %s" % len(self._keys)
         self._keys.append(fn)
+        self._keyLabels.append(label)
         self._sortKeys.append({})
         return self
     
@@ -205,7 +213,6 @@ class Nest(object):
         
         return values
     
-    
     def entries(self, data, depth=0):
         """ Applies the nest operator to the specified array, returning an associative
             array. Each Entry (a named tuple with the fields 'key' and 'values') in the
@@ -215,9 +222,79 @@ class Nest(object):
             another nested associative array; otherwise, the value is the array of
             elements filtered from the input array that have the given key value.
         """
-        return self._entries(self.map(data))
+        return Entries(self._entries(self.map(data)), _data=data, _nest=self)
     
     def __len__(self):
         return len(self._keys)
-    
 
+
+class Entries(list):
+    """
+    A wrapper for a list of entries, primarily to provide pretty formatting.
+    Designed for the IPython Notebook.
+    """
+    def __init__(self, *args, **kwargs):
+        self._data = kwargs.pop("_data")
+        self._nest = kwargs.pop("_nest")
+        super(Entries, self).__init__(*args, **kwargs)
+    
+    def _iter_rows(self, item=None):
+        """
+        yield a set of rows
+        """
+        if item is None:
+            item = self
+        
+        if isinstance(item, dict):
+            # this is an actual row
+            yield item.values()
+        elif isinstance(item, list):
+            # a list of rows
+            for child in item:
+                for row in self._iter_rows(child):
+                    yield row
+        elif isinstance(item, Entry):
+            # a new subrow... need to know all the rows, so just derefence now
+            rows = list(self._iter_rows(item.values))
+            
+            rows[0].insert(0, {"text": item.key, "rowspan": len(rows)})
+            
+            for row in rows:
+                yield row
+
+    def _repr_html_(self):
+        """
+        generate a table with merged rows for key values
+        """
+        
+        import jinja2
+        
+        tmpl = jinja2.Template("""
+            <table class="table table-condensed table-hover table-bordered">
+                <thead>
+                    <tr>
+                    {% for col in cols -%}
+                        <th>{{ col }}</th>
+                    {% endfor %}
+                    </tr>
+                </thead>
+                <tbody>
+                {% for row in rows %}
+                    <tr>
+                    {% for col in row -%}
+                        {% if col.rowspan %}
+                            <th rowspan="{{ col.rowspan }}">{{ col.text }}</th>
+                        {% else %}
+                            <td>{{ col }}</td>
+                        {% endif %}
+                    {% endfor %}
+                    </tr>
+                {%- endfor %}
+                </tbody>
+            </table>
+        """)
+        
+        return tmpl.render(
+            rows=list(self._iter_rows()),
+            cols=self._nest._keyLabels + self._data[0].keys()
+        )
